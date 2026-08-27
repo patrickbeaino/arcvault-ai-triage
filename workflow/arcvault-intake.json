@@ -1,0 +1,323 @@
+{
+  "id": "ArcVaultIntake01",
+  "name": "ArcVault Intake & Triage",
+  "nodes": [
+    {
+      "id": "receive-request",
+      "name": "Receive Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -600,
+        300
+      ],
+      "webhookId": "7f9c2a1e-3b5d-4e8f-9a6c-1d2e3f4a5b6c",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "arcvault-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "normalize-input",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -380,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Normalize the raw webhook payload into a consistent internal shape.\nconst body = $json.body || {};\n\nconst rawMessage = (body.message || body.raw_message || body.text || '').toString().trim();\nif (!rawMessage) {\n  throw new Error('Request rejected: no message text found in payload (expected \"message\" field).');\n}\n\n// Normalize source into a small known set; keep the original for the record.\nconst sourceRaw = (body.source || 'unknown').toString().trim().toLowerCase().replace(/[\\s-]+/g, '_');\nconst SOURCE_ALIASES = { email: 'email', web_form: 'web_form', webform: 'web_form', form: 'web_form', support_portal: 'support_portal', portal: 'support_portal' };\nconst source = SOURCE_ALIASES[sourceRaw] || 'unknown';\n\n// Use the caller's request id if provided, otherwise generate one.\nconst requestId = (body.request_id || `req-${Date.now()}`).toString();\n\nreturn {\n  request_id: requestId,\n  source,\n  raw_message: rawMessage,\n  received_at: new Date().toISOString(),\n  llm_user_message: `Source channel: ${source}\\nCustomer message:\\n<<<\\n${rawMessage}\\n>>>`,\n};",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "analyze-with-llm",
+      "name": "Analyze with LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -160,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama3.1:8b\",\n  \"stream\": false,\n  \"keep_alive\": \"30m\",\n  \"options\": { \"temperature\": 0, \"num_ctx\": 4096 },\n  \"format\": {\"type\": \"object\", \"properties\": {\"category\": {\"type\": \"string\", \"enum\": [\"Bug Report\", \"Feature Request\", \"Billing Issue\", \"Technical Question\", \"Incident/Outage\"]}, \"priority\": {\"type\": \"string\", \"enum\": [\"Low\", \"Medium\", \"High\"]}, \"confidence\": {\"type\": \"number\", \"minimum\": 0, \"maximum\": 1}, \"core_issue\": {\"type\": \"string\"}, \"identifiers\": {\"type\": \"object\", \"properties\": {\"account_id\": {\"type\": [\"string\", \"null\"]}, \"invoice_number\": {\"type\": [\"string\", \"null\"]}, \"error_code\": {\"type\": [\"string\", \"null\"]}, \"amount_charged_usd\": {\"type\": [\"number\", \"null\"]}, \"amount_expected_usd\": {\"type\": [\"number\", \"null\"]}, \"external_systems\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"account_id\", \"invoice_number\", \"error_code\", \"amount_charged_usd\", \"amount_expected_usd\", \"external_systems\"]}, \"urgency_signal\": {\"type\": \"string\"}, \"signals\": {\"type\": \"object\", \"properties\": {\"multiple_users_affected\": {\"type\": \"boolean\"}, \"service_wide_outage\": {\"type\": \"boolean\"}}, \"required\": [\"multiple_users_affected\", \"service_wide_outage\"]}, \"summary\": {\"type\": \"string\"}}, \"required\": [\"category\", \"priority\", \"confidence\", \"core_issue\", \"identifiers\", \"urgency_signal\", \"signals\", \"summary\"]},\n  \"messages\": [\n    { \"role\": \"system\", \"content\": \"You are the intake triage analyst for ArcVault, a B2B SaaS platform. Customer requests arrive as unstructured text from email, web forms, and a support portal. You will be given ONE raw customer message. Return ONE JSON object that classifies and enriches it.\\n\\nYou only interpret the message. You do NOT decide routing, queues, or escalation \\u2014 deterministic business logic downstream makes those decisions from your output.\\n\\n## Classification\\n\\nChoose exactly one \\\"category\\\":\\n- \\\"Bug Report\\\" \\u2014 existing functionality is behaving incorrectly for this customer (errors, broken behavior, a regression), but the service as a whole is up.\\n- \\\"Feature Request\\\" \\u2014 the customer asks for new functionality or an improvement to existing functionality.\\n- \\\"Billing Issue\\\" \\u2014 invoices, charges, refunds, plan pricing, contract rates, or payment problems.\\n- \\\"Technical Question\\\" \\u2014 a how-to, configuration, integration, or capability question. Nothing is broken; the customer wants information.\\n- \\\"Incident/Outage\\\" \\u2014 the service (or a major part of it) is down, unreachable, or severely degraded, especially when it affects multiple users or a whole organization.\\n\\nTie-breakers:\\n- Broken behavior described as the service being down or unavailable for many users is \\\"Incident/Outage\\\", not \\\"Bug Report\\\".\\n- Any dispute or question about a charge, invoice, or rate is \\\"Billing Issue\\\", not \\\"Technical Question\\\".\\n- \\\"Can your product do X?\\\" or \\\"How do I set up X?\\\" is \\\"Technical Question\\\", even if the customer is evaluating or migrating tools.\\n- A report that existing functionality is failing or producing an error is a \\\"Bug Report\\\" even when it is phrased politely as a question (\\\"can you check why the export fails?\\\"). Questions about broken behavior are reports, not questions.\\n\\nChoose exactly one \\\"priority\\\":\\n- \\\"High\\\" \\u2014 the customer is blocked from using the service, the service is down or degraded, there is a security risk, or there is material financial impact.\\n- \\\"Medium\\\" \\u2014 the customer is impacted but can still work, a billing amount is disputed, or the request is time-sensitive.\\n- \\\"Low\\\" \\u2014 nice-to-have requests and questions with no stated time pressure.\\n\\n\\\"confidence\\\" \\u2014 a number from 0.0 to 1.0 expressing how certain YOU are that the chosen category is correct. Be honest and calibrated, using these bands:\\n- 0.90\\u20131.00: the category is unmistakable; no other category is plausible.\\n- 0.70\\u20130.89: the category is clear, with only minor ambiguity.\\n- 0.40\\u20130.69: two or more categories are genuinely plausible, or the message is too vague to be sure.\\n- below 0.40: the message barely supports any classification.\\nThe customer being unsure where to send their message does not lower your confidence; only ambiguity about the category does. If the message mixes two different request types (e.g. a billing complaint plus a bug), pick the dominant one and reflect the ambiguity in a lower confidence. When you are genuinely torn, reporting 0.6 is honest; reporting 0.9 is a failure.\\n\\n## Enrichment \\u2014 extraction rules\\n\\nExtract ONLY information literally present in the message. If something is not stated, use null (or [] for lists, false for booleans). NEVER invent, guess, or infer an identifier, amount, or name. A null field is correct; a fabricated one is a critical failure.\\n\\n- \\\"core_issue\\\": one factual sentence stating what the customer needs.\\n- \\\"identifiers\\\":\\n  - \\\"account_id\\\": an account ID, username, or account URL identifying the customer, copied verbatim.\\n  - \\\"invoice_number\\\": the invoice number if one is mentioned (e.g. \\\"8821\\\" from \\\"Invoice #8821\\\").\\n  - \\\"error_code\\\": an HTTP status or product error code (e.g. \\\"403\\\").\\n  - \\\"amount_charged_usd\\\": the amount the customer says they were actually charged, as a plain number.\\n  - \\\"amount_expected_usd\\\": the amount the customer says they expected to pay, as a plain number.\\n  - \\\"external_systems\\\": names of third-party products or vendors mentioned (e.g. [\\\"Okta\\\"]).\\n- Report amounts exactly as stated. Do NOT compute differences or totals yourself.\\n- \\\"urgency_signal\\\": quote or closely paraphrase the exact words from the customer's message that show time pressure or impact. Use only words that appear in the message itself \\u2014 never words from these instructions. Use \\\"none\\\" if the message contains no urgency cue.\\n- \\\"signals\\\":\\n  - \\\"multiple_users_affected\\\": true only if the message states that more than one person is currently affected by a problem or outage. A team asking for a feature or using \\\"we\\\" in a question does NOT count. A message written in first person singular about the author's own problem (\\\"I can't log in\\\") means false.\\n  - \\\"service_wide_outage\\\": false whenever one individual reports their own error, failed action, or blocked access \\u2014 no matter how severe it is for that person. true only if the message says the service or a core component is down, unreachable, or broken for the customer's organization or for multiple users (outage-level impact).\\n\\n## Summary\\n\\n\\\"summary\\\": a handoff note of two to three sentences for the receiving team. Cover what happened, any impact or identifiers that matter, and what the customer needs next. It must stand on its own \\u2014 the reader should not need to open the original message.\\n\\n## Output\\n\\nReturn ONLY the JSON object. No markdown, no code fences, no commentary.\\n\" },\n    { \"role\": \"user\", \"content\": {{ JSON.stringify($json.llm_user_message) }} }\n  ]\n}",
+        "options": {
+          "timeout": 120000
+        }
+      }
+    },
+    {
+      "id": "validate-llm-output",
+      "name": "Validate LLM Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Never trust LLM output blindly: parse it and validate every field we rely on.\n// On failure we do NOT throw \u2014 we mark validation as failed so deterministic\n// logic downstream routes the request to Human Review instead of dropping it.\nconst ALLOWED_CATEGORIES = [\"Bug Report\", \"Feature Request\", \"Billing Issue\", \"Technical Question\", \"Incident/Outage\"];\nconst ALLOWED_PRIORITIES = [\"Low\", \"Medium\", \"High\"];\n\nconst norm = $('Normalize Input').item.json;\nconst errors = [];\nlet analysis = null;\n\ntry {\n  const content = $json.message && $json.message.content;\n  if (typeof content !== 'string' || !content.trim()) throw new Error('empty LLM response');\n  analysis = JSON.parse(content);\n} catch (e) {\n  errors.push(`LLM response is not valid JSON: ${e.message}`);\n}\n\nif (analysis) {\n  if (!ALLOWED_CATEGORIES.includes(analysis.category)) errors.push(`category \"${analysis.category}\" is not an allowed category`);\n  if (!ALLOWED_PRIORITIES.includes(analysis.priority)) errors.push(`priority \"${analysis.priority}\" is not an allowed priority`);\n  if (typeof analysis.confidence !== 'number' || Number.isNaN(analysis.confidence) || analysis.confidence < 0 || analysis.confidence > 1) {\n    errors.push(`confidence \"${analysis.confidence}\" is not a number between 0 and 1`);\n  }\n  if (typeof analysis.core_issue !== 'string' || !analysis.core_issue.trim()) errors.push('core_issue is missing or empty');\n  if (typeof analysis.summary !== 'string' || !analysis.summary.trim()) errors.push('summary is missing or empty');\n  if (typeof analysis.urgency_signal !== 'string') errors.push('urgency_signal is missing');\n  if (!analysis.identifiers || typeof analysis.identifiers !== 'object') {\n    errors.push('identifiers object is missing');\n  } else {\n    // Ensure every expected identifier key exists; null is the correct \"absent\" value.\n    const ids = analysis.identifiers;\n    for (const k of ['account_id', 'invoice_number', 'error_code']) {\n      if (ids[k] !== null && typeof ids[k] !== 'string') ids[k] = ids[k] == null ? null : String(ids[k]);\n    }\n    for (const k of ['amount_charged_usd', 'amount_expected_usd']) {\n      if (ids[k] !== null && typeof ids[k] !== 'number') errors.push(`${k} must be a number or null`);\n    }\n    if (!Array.isArray(ids.external_systems)) ids.external_systems = [];\n  }\n  if (!analysis.signals || typeof analysis.signals.multiple_users_affected !== 'boolean' || typeof analysis.signals.service_wide_outage !== 'boolean') {\n    errors.push('signals booleans are missing');\n  }\n}\n\nreturn {\n  request_id: norm.request_id,\n  source: norm.source,\n  raw_message: norm.raw_message,\n  received_at: norm.received_at,\n  analysis,\n  validation: { passed: errors.length === 0, errors },\n};",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "determine-route",
+      "name": "Determine Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Deterministic routing. The LLM classifies; this table decides the queue.\nconst ROUTING_TABLE = {\n  'Bug Report': 'Engineering',\n  'Feature Request': 'Product',\n  'Billing Issue': 'Billing',\n  'Technical Question': 'IT/Security',\n  'Incident/Outage': 'Engineering',\n};\nconst CONFIDENCE_THRESHOLD = 0.70;\n\nlet destination;\nlet rule;\n\nif (!$json.validation.passed) {\n  destination = 'Human Review / Escalation';\n  rule = 'llm_output_failed_validation';\n} else if ($json.analysis.confidence < CONFIDENCE_THRESHOLD) {\n  destination = 'Human Review / Escalation';\n  rule = 'confidence_below_0.70';\n} else {\n  destination = ROUTING_TABLE[$json.analysis.category];\n  rule = 'category_routing_table';\n}\n\nreturn { ...$json, routing: { destination, rule } };",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "determine-escalation",
+      "name": "Determine Escalation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Deterministic escalation rules from the assessment. Each rule appends a\n// human-readable reason; the flag is simply \"any rule fired\".\nconst CONFIDENCE_THRESHOLD = 0.70;\nconst BILLING_DISCREPANCY_THRESHOLD_USD = 500;\n\nconst a = $json.analysis;\nconst reasons = [];\nlet billingDiscrepancy = null;\n\nif (!$json.validation.passed) {\n  reasons.push(`LLM output failed validation (${$json.validation.errors.join('; ')})`);\n}\n\nif (a && $json.validation.passed) {\n  // Rule 1: low classification confidence\n  if (a.confidence < CONFIDENCE_THRESHOLD) {\n    reasons.push(`Classification confidence ${a.confidence.toFixed(2)} is below the ${CONFIDENCE_THRESHOLD} threshold`);\n  }\n  // Rule 2: the request describes an outage/incident\n  if (a.category === 'Incident/Outage') {\n    reasons.push('Request describes an incident or outage');\n  }\n  // Rule 3: multiple users affected\n  if (a.signals.multiple_users_affected) {\n    reasons.push('Multiple users are affected');\n  }\n  // Rule 4: explicit critical system failure (extracted as service-wide outage\n  // so a single blocked user does not qualify)\n  if (a.signals.service_wide_outage) {\n    reasons.push('Message indicates a critical, service-wide system failure');\n  }\n  // Rule 5: billing discrepancy > $500 \u2014 computed in code from the two\n  // extracted amounts; we never ask the LLM to do arithmetic.\n  const charged = a.identifiers.amount_charged_usd;\n  const expected = a.identifiers.amount_expected_usd;\n  if (typeof charged === 'number' && typeof expected === 'number') {\n    billingDiscrepancy = Math.round(Math.abs(charged - expected) * 100) / 100;\n    if (billingDiscrepancy > BILLING_DISCREPANCY_THRESHOLD_USD) {\n      reasons.push(`Billing discrepancy $${billingDiscrepancy} exceeds $${BILLING_DISCREPANCY_THRESHOLD_USD}`);\n    }\n  }\n}\n\nreturn {\n  ...$json,\n  billing_discrepancy_usd: billingDiscrepancy,\n  escalation: {\n    flagged: reasons.length > 0,\n    reason: reasons.length > 0 ? reasons.join(' | ') : null,\n  },\n};",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "load-email-config",
+      "name": "Load Email Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        720,
+        300
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": true,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "email-config-1",
+              "name": "notification_config",
+              "type": "object",
+              "value": "={{ { enabled: ($env.EMAIL_NOTIFICATIONS_ENABLED ?? 'true').toString().toLowerCase() !== 'false', mailpit_url: $env.MAILPIT_API_URL || 'http://mailpit:8025', recipients: { 'Engineering': $env.ENGINEERING_EMAIL || 'engineering@arcvault.local', 'Product': $env.PRODUCT_EMAIL || 'product@arcvault.local', 'Billing': $env.BILLING_EMAIL || 'billing@arcvault.local', 'IT/Security': $env.SECURITY_EMAIL || 'security@arcvault.local', 'Human Review / Escalation': $env.HUMAN_REVIEW_EMAIL || 'human-review@arcvault.local' } } }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "compose-notification",
+      "name": "Compose Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Deterministic notification planning. Recipients come ONLY from the routing\n// destination via the config map injected by Load Email Config \u2014 the LLM\n// output contains no recipient fields at all, so it cannot influence who\n// gets notified.\nconst { notification_config: cfg, ...rest } = $json;\nconst enabled = cfg.enabled;\nconst RECIPIENTS = cfg.recipients;\n\nconst a = $json.analysis;\nconst dest = $json.routing.destination;\nconst recipient = RECIPIENTS[dest] || RECIPIENTS['Human Review / Escalation'];\nconst flagged = $json.escalation.flagged;\nconst prio = a && a.priority ? a.priority.toUpperCase() : 'UNTRIAGED';\nconst cat = a && a.category ? a.category : 'Unclassified request';\nconst subject = `[${prio}]${flagged ? ' \u26a0' : ''} ArcVault ${cat} \u2014 ${$json.request_id}`;\n\nconst idLines = a\n  ? Object.entries(a.identifiers)\n      .filter(([, v]) => v !== null && !(Array.isArray(v) && v.length === 0))\n      .map(([k, v]) => `  ${k}: ${Array.isArray(v) ? v.join(', ') : v}`)\n  : [];\nif ($json.billing_discrepancy_usd != null) {\n  idLines.push(`  billing_discrepancy_usd (computed): $${$json.billing_discrepancy_usd}`);\n}\n\nconst body = [\n  'ArcVault AI Triage Notification',\n  '',\n  `Request ID: ${$json.request_id}`,\n  `Source: ${$json.source}`,\n  `Received: ${$json.received_at}`,\n  '',\n  'Classification',\n  `  Category: ${cat}`,\n  `  Priority: ${a ? a.priority : 'n/a'}`,\n  `  Confidence: ${a ? Math.round(a.confidence * 100) + '%' : 'n/a'}`,\n  '',\n  'Issue',\n  `  ${a ? a.core_issue : 'LLM output failed validation - manual triage required.'}`,\n  ...(idLines.length ? ['', 'Extracted identifiers', ...idLines] : []),\n  '',\n  `Urgency signal: ${a ? a.urgency_signal : 'n/a'}`,\n  '',\n  'Routing',\n  `  Destination: ${dest}`,\n  `  Rule: ${$json.routing.rule}`,\n  '',\n  'Escalation',\n  flagged ? '  \u26a0 HUMAN REVIEW REQUIRED' : '  Not escalated',\n  ...(flagged ? [`  Reason: ${$json.escalation.reason}`] : []),\n  '',\n  'Summary',\n  `  ${a ? a.summary : $json.raw_message.slice(0, 200)}`,\n  '',\n  'Original request',\n  `  \"${$json.raw_message}\"`,\n].join('\\n');\n\nreturn { ...rest, notification_plan: {\n  enabled, recipient, recipient_team: dest, subject, body, mailpit_url: cfg.mailpit_url } };",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "send-email-notification",
+      "name": "Send Email Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Delivery + status capture. An email failure must never destroy the ticket:\n// every error is caught and recorded, and the workflow continues to\n// persistence with notification.email.status = \"failed\".\nconst plan = $json.notification_plan;\nconst { notification_plan, ...rest } = $json;\nconst base = { enabled: plan.enabled, recipient: plan.recipient, recipient_team: plan.recipient_team };\n\nif (!plan.enabled) {\n  return { ...rest, notification: { email: { ...base, status: 'disabled' } } };\n}\n\ntry {\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: (plan.mailpit_url || 'http://mailpit:8025') + '/api/v1/send',\n    body: {\n      From: { Email: 'triage@arcvault.local', Name: 'ArcVault AI Triage' },\n      To: [{ Email: plan.recipient }],\n      Subject: plan.subject,\n      Text: plan.body,\n    },\n    json: true,\n    timeout: 5000,\n  });\n  return { ...rest, notification: { email: {\n    ...base, status: 'sent', subject: plan.subject, message_id: (res && res.ID) || null } } };\n} catch (e) {\n  return { ...rest, notification: { email: {\n    ...base, status: 'failed', error: String((e && e.message) || e).slice(0, 200) } } };\n}",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "build-final-record",
+      "name": "Build Final Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1380,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Assemble the final structured record and attach it as binary so the next\n// node can persist it as a standalone JSON file.\nconst item = items[0].json;\nconst a = item.analysis;\n\nconst record = {\n  request_id: item.request_id,\n  source: item.source,\n  received_at: item.received_at,\n  raw_message: item.raw_message,\n  classification: {\n    category: a ? a.category : null,\n    priority: a ? a.priority : null,\n    confidence: a ? a.confidence : null,\n  },\n  enrichment: {\n    core_issue: a ? a.core_issue : null,\n    identifiers: a ? a.identifiers : {},\n    billing_discrepancy_usd: item.billing_discrepancy_usd,\n    urgency_signal: a ? a.urgency_signal : null,\n    signals: a ? a.signals : null,\n  },\n  routing: { destination: item.routing.destination, rule: item.routing.rule },\n  escalation: { flagged: item.escalation.flagged, reason: item.escalation.reason },\n  notification: item.notification || { email: { enabled: false, status: 'not_run' } },\n  summary: a ? a.summary : null,\n  meta: {\n    llm_model: 'llama3.1:8b',\n    prompt_version: 'v6',\n    validation: item.validation,\n    processed_at: new Date().toISOString(),\n  },\n};\n\nconst fileName = `${record.request_id}.json`;\nreturn [{\n  json: record,\n  binary: {\n    data: {\n      data: Buffer.from(JSON.stringify(record, null, 2)).toString('base64'),\n      mimeType: 'application/json',\n      fileName,\n    },\n  },\n}];"
+      }
+    },
+    {
+      "id": "persist-output",
+      "name": "Persist Output",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        300
+      ],
+      "parameters": {
+        "operation": "write",
+        "fileName": "=/data/output/{{ $binary.data.fileName }}",
+        "dataPropertyName": "data",
+        "options": {}
+      }
+    },
+    {
+      "id": "respond-to-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1820,
+        300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $('Build Final Record').item.json }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Receive Request": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Analyze with LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze with LLM": {
+      "main": [
+        [
+          {
+            "node": "Validate LLM Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate LLM Output": {
+      "main": [
+        [
+          {
+            "node": "Determine Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Determine Route": {
+      "main": [
+        [
+          {
+            "node": "Determine Escalation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Determine Escalation": {
+      "main": [
+        [
+          {
+            "node": "Load Email Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Email Config": {
+      "main": [
+        [
+          {
+            "node": "Compose Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Notification": {
+      "main": [
+        [
+          {
+            "node": "Send Email Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email Notification": {
+      "main": [
+        [
+          {
+            "node": "Build Final Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Final Record": {
+      "main": [
+        [
+          {
+            "node": "Persist Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Output": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": true
+}

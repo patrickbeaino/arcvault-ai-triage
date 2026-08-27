@@ -1,0 +1,26 @@
+# OPTIONAL — relay captured emails to a real inbox (personal testing only).
+# The assessment demo needs none of this: by default all mail stays local in Mailpit.
+#
+# Setup:
+#   1. cp docker-compose.override.yml.example docker-compose.override.yml
+#   2. Create a Gmail App Password: Google Account → Security → 2-Step Verification
+#      → App passwords (requires 2FA). Paste it below.
+#   3. docker compose up -d
+#   4. Open a message in Mailpit (http://localhost:8025) and click "Release"
+#      to forward it to your real address.
+#
+# docker-compose.override.yml is gitignored — NEVER commit real credentials.
+services:
+  mailpit:
+    environment:
+      - MP_SMTP_RELAY_HOST=smtp.gmail.com
+      - MP_SMTP_RELAY_PORT=587
+      - MP_SMTP_RELAY_STARTTLS=true
+      - MP_SMTP_RELAY_AUTH=login
+      - MP_SMTP_RELAY_USERNAME=you@gmail.com
+      - MP_SMTP_RELAY_PASSWORD=your-16-char-app-password
+      # Safety net: relay can only ever deliver to this address (regex)
+      - MP_SMTP_RELAY_ALLOWED_RECIPIENTS=^you@gmail\.com$
+      # Optional: auto-forward any notification addressed to your address
+      # (then run e.g.:  ENGINEERING_EMAIL=you@gmail.com docker compose up -d n8n)
+      # - MP_SMTP_RELAY_MATCHING=^you@gmail\.com$

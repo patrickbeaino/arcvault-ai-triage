@@ -1,0 +1,48 @@
+# ArcVault Intake & Triage — local n8n instance.
+# LLM (Ollama) runs natively on the host for Apple-Silicon GPU access;
+# n8n reaches it via host.docker.internal:11434.
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:2.36.7   # pinned: CLI import/publish commands verified on this version
+    container_name: arcvault-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Linux: lets the container reach host Ollama (no-op on Docker Desktop)
+    environment:
+      - N8N_SECURE_COOKIE=false
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_RESTRICT_FILE_ACCESS_TO=/data/output   # allow the Persist Output node to write records
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false         # let the Load Email Config node read $env
+      # --- email notifications (all optional; defaults work out of the box) ---
+      - EMAIL_NOTIFICATIONS_ENABLED=${EMAIL_NOTIFICATIONS_ENABLED:-true}
+      - MAILPIT_API_URL=${MAILPIT_API_URL:-http://mailpit:8025}
+      - ENGINEERING_EMAIL=${ENGINEERING_EMAIL:-engineering@arcvault.local}
+      - PRODUCT_EMAIL=${PRODUCT_EMAIL:-product@arcvault.local}
+      - BILLING_EMAIL=${BILLING_EMAIL:-billing@arcvault.local}
+      - SECURITY_EMAIL=${SECURITY_EMAIL:-security@arcvault.local}
+      - HUMAN_REVIEW_EMAIL=${HUMAN_REVIEW_EMAIL:-human-review@arcvault.local}
+      - GENERIC_TIMEZONE=America/New_York
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./output:/data/output          # processed records land here, one JSON file per request
+      - ./workflow:/data/workflow:ro   # workflow JSON for CLI import
+
+  # Local email capture for demo/eval: SMTP-less JSON send API + browser inbox.
+  # No accounts, no credentials — emails never leave the machine.
+  mailpit:
+    image: axllent/mailpit:v1.31.0   # pinned for reproducibility
+    container_name: arcvault-mailpit
+    restart: unless-stopped
+    ports:
+      - "8025:8025"   # web inbox UI + HTTP API
+    environment:
+      - MP_DATABASE=/data/mailpit.db   # keep the inbox across restarts
+    volumes:
+      - mailpit_data:/data
+
+volumes:
+  n8n_data:
+  mailpit_data:

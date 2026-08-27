@@ -1,0 +1,56 @@
+{
+  "request_id": "req-006",
+  "source": "email",
+  "received_at": "2026-08-27T07:20:10.561Z",
+  "raw_message": "Hello, please advise on the thing we discussed earlier. It's important.",
+  "classification": {
+    "category": "Technical Question",
+    "priority": "Medium",
+    "confidence": 0.6
+  },
+  "enrichment": {
+    "core_issue": "Clarify a previously discussed topic.",
+    "identifiers": {
+      "account_id": null,
+      "invoice_number": null,
+      "error_code": null,
+      "amount_charged_usd": null,
+      "amount_expected_usd": null,
+      "external_systems": []
+    },
+    "billing_discrepancy_usd": null,
+    "urgency_signal": "It's important.",
+    "signals": {
+      "multiple_users_affected": false,
+      "service_wide_outage": false
+    }
+  },
+  "routing": {
+    "destination": "Human Review / Escalation",
+    "rule": "confidence_below_0.70"
+  },
+  "escalation": {
+    "flagged": true,
+    "reason": "Classification confidence 0.60 is below the 0.7 threshold"
+  },
+  "notification": {
+    "email": {
+      "enabled": true,
+      "recipient": "human-review@arcvault.local",
+      "recipient_team": "Human Review / Escalation",
+      "status": "sent",
+      "subject": "[MEDIUM] ⚠ ArcVault Technical Question — req-006",
+      "message_id": "7Zx3IRUWbzV85ZDnPSRvPk"
+    }
+  },
+  "summary": "Customer needs clarification on a previously discussed topic, which they consider time-sensitive.",
+  "meta": {
+    "llm_model": "llama3.1:8b",
+    "prompt_version": "v6",
+    "validation": {
+      "passed": true,
+      "errors": []
+    },
+    "processed_at": "2026-08-27T07:20:13.127Z"
+  }
+}
